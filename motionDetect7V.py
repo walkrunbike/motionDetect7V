@@ -14,46 +14,63 @@ import StringIO
 import datetime
 import traceback
 
+
 class Camera:
    def __init__(self):
       config = ConfigManager()
       self.videoURL = config.get("Camera", "cameraURL")    
       self.timeout  = int(config.get("Camera", "socketTimeout")) 
 
-      # Image source type can be: 'MJPEG'
+      # Image source type can be: 'MJPEG', 'RTSP'
       self.imgSourceType  = config.get("Camera", "cameraFormat")
       self.mjpegStream    = ''
-      self.capFile        = ''      
+      self.capFile        = ''
       self.frameCount     = 0
       self.frameTime      = 0
+      self.rtspStream     = ''
       socket.setdefaulttimeout(self.timeout)
       self.setImageSource(self.imgSourceType)
 
    def getFrame(self):
-      img = self.getMjpegFrame()
-
-      if self.capFile != "":
-         # shouldn't capture data again if already from a file
-         if not isinstance(self.mjpegStream, file):
-            self.capFile.write("Content-Length:%d\n" % len(img))
-            self.capFile.write("\n")
-            self.capFile.write(img)
-            
-      # convert to np array
-      data = np.asarray(bytearray(img), dtype="uint8")
-      #cvImage = cv2.imdecode(data, cv2.CV_LOAD_IMAGE_COLOR)
-      #3.0
-      cvImage = cv2.imdecode(data, cv2.IMREAD_COLOR)
+      cvImage = []
+      
+      if self.imgSourceType == "MJPEG":
+         img = self.getMjpegFrame()
+   
+         if self.capFile != "":
+            # shouldn't capture data again if already from a file
+            if not isinstance(self.mjpegStream, file):
+               self.capFile.write("Content-Length:%d\n" % len(img))
+               self.capFile.write("\n")
+               self.capFile.write(img)
+               
+         # convert to np array
+         data = np.asarray(bytearray(img), dtype="uint8")
+         
+         if (cv2.__version__[0] == "2"):
+            #opencv 2.x
+            cvImage = cv2.imdecode(data, cv2.CV_LOAD_IMAGE_COLOR)
+         elif (cv2.__version__[0] == "3"):
+            #opencv 3.0
+            cvImage = cv2.imdecode(data, cv2.IMREAD_COLOR)
+         else:
+            raise FatalException("Unknown openCV version: %s" % cv2.__version__)
+         
+      if self.imgSourceType == "RTSP":
+         r, cvImage = self.rtspStream.read()
       
       
       self.frameCount += 1
       if self.frameCount == 1:
          self.frameTime = time.time()
+         h,w = cvImage.shape[:2]
+         Log("Image dimension = %s x %s" % (h, w))
          
       delta = time.time() - self.frameTime
       if delta > 60:
          Log( "Frames Retrieved Per Sec = %0.1f" % (self.frameCount / delta) )
          self.frameCount = 0
+     
       return cvImage
    
    def saveFrame(self, img, fileName):
@@ -69,6 +86,12 @@ class Camera:
          self.mjpegStream = open(sourceLocation, "rb")
       else:
          self.mjpegStream = ""
+      
+      if sourceType == "RTSP":
+         self.rtspStream = cv2.VideoCapture(self.videoURL)
+         #opencv3
+         #self.rtspStream.set(cv2.CAP_PROP_FPS, 10)
+      
 
    def __openMjpegStream(self):
       """
@@ -147,9 +170,14 @@ class MotionDetector:
       """
       retval, threshImg = cv2.threshold(grayScaleImg, colorSensitivityThresh, 255, cv2.THRESH_BINARY)
       threshImg = cv2.dilate(threshImg, None, iterations=2)
-      #contours, hierarchy = cv2.findContours(threshImg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-      #3.0
-      img, contours, hierarchy = cv2.findContours(threshImg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+      img, contour, hierarchy = (0, 0, 0)
+      if cv2.__version__[0] == "2":
+         #opencv 2.x
+         contours, hierarchy = cv2.findContours(threshImg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+      else:
+         #opencv 3.0
+         img, contours, hierarchy = cv2.findContours(threshImg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+      
 
       foundObjects = []
       for c in contours:
@@ -265,9 +293,13 @@ class Archiver:
       if (os.path.isfile(self.fileName)):
          self.archiveSession()
       
-      #fourcc = cv2.cv.CV_FOURCC('m', 'p', '4', 'v')
-      #3.0
-      fourcc = cv2.VideoWriter_fourcc('m','p','4','v')
+      fourcc = ""
+      if cv2.__version__[0] == "2":
+         #opencv 2.0
+         fourcc = cv2.cv.CV_FOURCC('m', 'p', '4', 'v')
+      else:
+         #opencv 3.0
+         fourcc = cv2.VideoWriter_fourcc('m','p','4','v')
       self.video = cv2.VideoWriter()
       self.video.open(self.fileName, fourcc, 15, self.dimension)
    

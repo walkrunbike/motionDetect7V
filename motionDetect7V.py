@@ -15,89 +15,53 @@ import datetime
 import traceback
 
 
-class Camera:
+class VideoSource(object):
    def __init__(self):
-      config = ConfigManager()
-      self.videoURL = config.get("Camera", "cameraURL")    
-      self.timeout  = int(config.get("Camera", "socketTimeout")) 
-
-      # Image source type can be: 'MJPEG', 'RTSP'
-      self.imgSourceType  = config.get("Camera", "cameraFormat")
-      self.mjpegStream    = ''
-      self.capFile        = ''
-      self.frameCount     = 0
-      self.frameTime      = 0
-      self.rtspStream     = ''
-      socket.setdefaulttimeout(self.timeout)
-      self.setImageSource(self.imgSourceType)
-
-   def getFrame(self):
-      cvImage = []
-      
-      if self.imgSourceType == "MJPEG":
-         img = self.getMjpegFrame()
+      self.frameCount  = 0
+      self.frameTimer  = 0
+      self.capFile     = ""
    
-         if self.capFile != "":
-            # shouldn't capture data again if already from a file
-            if not isinstance(self.mjpegStream, file):
-               self.capFile.write("Content-Length:%d\n" % len(img))
-               self.capFile.write("\n")
-               self.capFile.write(img)
-               
-         # convert to np array
-         data = np.asarray(bytearray(img), dtype="uint8")
-         
-         if (cv2.__version__[0] == "2"):
-            #opencv 2.x
-            cvImage = cv2.imdecode(data, cv2.CV_LOAD_IMAGE_COLOR)
-         elif (cv2.__version__[0] == "3"):
-            #opencv 3.0
-            cvImage = cv2.imdecode(data, cv2.IMREAD_COLOR)
-         else:
-            raise FatalException("Unknown openCV version: %s" % cv2.__version__)
-         
-      if self.imgSourceType == "RTSP":
-         r, cvImage = self.rtspStream.read()
-      
-      
+   def getFrame(self):
       self.frameCount += 1
       if self.frameCount == 1:
-         self.frameTime = time.time()
-         h,w = cvImage.shape[:2]
-         Log("Image dimension = %s x %s" % (h, w))
+         self.frameTimer = time.time()
          
-      delta = time.time() - self.frameTime
+      delta = time.time() - self.frameTimer
       if delta > 60:
-         Log( "Frames Retrieved Per Sec = %0.1f" % (self.frameCount / delta) )
+         fps = (self.frameCount / delta)
+         Log( "Frames Retrieved Per Sec = %0.1f" % fps )
          self.frameCount = 0
-     
-      return cvImage
+         if (fps < 4.0):
+            raise NonFatalException("Low Frame Count Exception")       
+      pass
    
-   def saveFrame(self, img, fileName):
-      f = open(saveFileName, "wb")
-      f.write(data)
-      f.close()   
+   def saveFrame(self, img):
+      # todo: need to be jpeg
+      if self.capFile != "":
+         r, output = cv2.imencode(".jpg", img)
+         self.capFile.write("Content-Length:%d\n" % len(output))
+         self.capFile.write("\n")
+         self.capFile.write(output)
+   
+   def startCaptureToFile(self, fileName = ""):
+      self.capFile = open(fileName, "ab")
+   
+   def stopCaptureToFile(self):
+      if self.capFile != "":
+         self.capFile.close()
+         self.capFile = ""
 
-   def setImageSource(self, sourceType = "MJPEG", sourceLocation = ""):
-      self.imgSourceType = sourceType
-      if sourceType == "MJPEG":
-         self.mjpegStream = self.__openMjpegStream()
-      elif sourceType == "FILE":
-         self.mjpegStream = open(sourceLocation, "rb")
-      else:
-         self.mjpegStream = ""
-      
-      if sourceType == "RTSP":
-         self.rtspStream = cv2.VideoCapture(self.videoURL)
-         #opencv3
-         #self.rtspStream.set(cv2.CAP_PROP_FPS, 10)
-      
-
-   def __openMjpegStream(self):
+class CameraMJPEG(VideoSource):
+   def __init__(self):
       """
-      open connection for mjpeg stream
+      open connection for mjpeg stream                            
       exception if connection cannot be established
       """
+      super(self.__class__, self).__init__()
+      config = ConfigManager()
+      self.videoURL = config.get("Camera", "cameraURL")
+      self.timeout  = int(config.get("Camera", "socketTimeout"))
+      socket.setdefaulttimeout(self.timeout)      
       stream = ""
       attempt = 0
       while attempt < 5 and stream == "":
@@ -106,50 +70,129 @@ class Camera:
          except:
             time.sleep(1)
             attempt += 1
-      return stream
-            
-   def __readMjpegStream(self, bytes = 0):
-      """ read data from the stream
-          data can be captured to a file, if capFile handle is set
-      """
-      data = ""
-      if bytes == 0:
-         data = self.mjpegStream.readline()
-         # allow looping if data is coming from a file
-         if len(data) == 0 and isinstance(self.mjpegStream, file):
-            self.mjpegStream.seek(0,0)
-      else:
-         data = self.mjpegStream.read(bytes)
-      return data
-      
-   def getMjpegFrame(self):
+      if stream == "":
+         raise NonFatalException("Unable to open camera URL")
+      self.videoStream = stream
+
+   def getFrame(self):
+      super(CameraMJPEG, self).getFrame()      
       data = ""
       while data.find("Content-Length:") < 0: 
          data = self.__readMjpegStream()
       bytes = int(data.replace("Content-Length:", ""))
       self.__readMjpegStream()
       data = self.__readMjpegStream(bytes)
+   
+      # convert to np array
+      cVImage = ""
+      data = np.asarray(bytearray(data), dtype="uint8")
+      # cv2 version differences         
+      if (cv2.__version__[0] == "2"):
+         cvImage = cv2.imdecode(data, cv2.CV_LOAD_IMAGE_COLOR)
+      else:
+         cvImage = cv2.imdecode(data, cv2.IMREAD_COLOR)
+      super(CameraMJPEG, self).saveFrame(cvImage)          
+      return cvImage                                                        
+      
+   def __readMjpegStream(self, bytes = 0):
+      """ read data from the stream
+      """
+      data = ""
+      if bytes == 0:
+         data = self.videoStream.readline()
+      else:
+         data = self.videoStream.read(bytes)
       return data
       
-   def startCapture(self, fileName = ""):
-      self.capFile = open(fileName, "ab")
-      pass
-   
-   def stopCapture(self):
-      if self.capFile != "":
-         self.capFile.close()
-         self.capFile = ""
 
+class CameraRTSP(VideoSource):
+   def __init__(self):
+      super(self.__class__, self).__init__()
+      config = ConfigManager()
+      self.videoURL = config.get("Camera", "cameraURL")
+      self.timeout  = int(config.get("Camera", "socketTimeout"))       
+      self.videoStream = cv2.VideoCapture(self.videoURL)
+      socket.setdefaulttimeout(self.timeout)
+
+   def getFrame(self):
+      super(CameraRTSP, self).getFrame()      
+      r, cvImage = self.videoStream.read()
+      h,w = cvImage.shape[:2]
+      if (h != 480) or (w != 640):
+         Log("Warning: 480x640 expected. Image dimension = %d x %d" % (h, w))
+      super(CameraRTSP, self).saveFrame(cvImage) 
+      return cvImage
+      
+   
+class CameraFileCapture(VideoSource):
+   def __init__(self, sourceFileName):
+      self.videoStream = open(sourceFileName, "rb")
+
+   def getFrame(self):
+      data = ""
+      while data.find("Content-Length:") < 0: 
+         data = self.__readMjpegStream()
+      bytes = int(data.replace("Content-Length:", ""))
+      self.__readMjpegStream()
+      data = self.__readMjpegStream(bytes)
+
+      # convert to np array
+      cVImage = ""
+      data = np.asarray(bytearray(data), dtype="uint8")
+      # cv2 version differences         
+      if (cv2.__version__[0] == "2"):
+         cvImage = cv2.imdecode(data, cv2.CV_LOAD_IMAGE_COLOR)
+      else:
+         cvImage = cv2.imdecode(data, cv2.IMREAD_COLOR)
+      return cvImage
+      
+   def __readMjpegStream(self, bytes = 0):
+      """ read data from the stream
+      """
+      data = ""
+      if bytes == 0:
+         data = self.videoStream.readline()
+         # allow looping
+         if len(data) == 0:
+            self.videoStream.seek(0,0)
+      else:
+         data = self.videoStream.read(bytes)
+      return data
+      
+   
+class VideoSourceFactory:
+   def __init__(self):
+      config = ConfigManager()
+      self.videoURL = config.get("Camera", "cameraURL")
+      # Image source type can be: 'MJPEG', 'RTSP', 'FILE'
+      self.imgSourceType  = config.get("Camera", "cameraFormat")
+      
+   def getVideoSource(self):         
+      if self.imgSourceType == "RTSP":
+         videoStream = CameraRTSP() 
+      elif self.imgSourceType == "MJPEG":
+         videoStream = CameraMJPEG()
+      elif self.imgSourceType == "FILE":
+         videoStream = CameraFileCapture( 'capture.mjpg' )
+      else:
+         videoStream = ""
+         raise FatalException( "Unknown cameraFormat: %s" % self.imgSourceType )
+      return videoStream
+      
+   def getFileSource(self, sourceName):
+      videoStream = CameraFileCapture( sourceName )
+      return videoStream
 
 class MotionDetector:
    def __init__(self):
       config = ConfigManager()
-      x,y,w,h = (config.get("Detection", "preferredArea")).split(",")
-      self.preferredArea = (int(x), int(y), int(w), int(h))
-      self.camera = Camera()
+      x,y,w,h = (config.get("Detection", "AlertArea")).split(",")
+      self.AlertArea = (int(x), int(y), int(w), int(h))
+      self.camera = VideoSourceFactory().getVideoSource()
       self.viewController = ViewController(self.camera)
       self.archiver = Archiver(640, 480)
       self.objectHistory = []
+      self.CaptureBoarderActivity = config.get("Detection", "CaptureBoarderActivity")
    
    def diffImg2(self, img1, img2):   
       gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
@@ -171,13 +214,11 @@ class MotionDetector:
       retval, threshImg = cv2.threshold(grayScaleImg, colorSensitivityThresh, 255, cv2.THRESH_BINARY)
       threshImg = cv2.dilate(threshImg, None, iterations=2)
       img, contour, hierarchy = (0, 0, 0)
+      # cv2 version
       if cv2.__version__[0] == "2":
-         #opencv 2.x
          contours, hierarchy = cv2.findContours(threshImg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
       else:
-         #opencv 3.0
          img, contours, hierarchy = cv2.findContours(threshImg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-      
 
       foundObjects = []
       for c in contours:
@@ -228,8 +269,8 @@ class MotionDetector:
          (x, y, w, h) = r
          cv2.rectangle(img, (x, y), (x + w, y + h), color, rectThickness)
          
-   def isMotionInPreferredArea(self, rectangle):
-      (px, py, pw, ph) = self.preferredArea
+   def isMotionInAlertArea(self, rectangle):
+      (px, py, pw, ph) = self.AlertArea
       (x, y, w, h) = rectangle
       result = False
       if (x >= px) and ((x+w) <= (px + pw)) and (y >= py) and ((y+h) <= (py + ph)):
@@ -244,27 +285,30 @@ class MotionDetector:
       rects = self.convertContoursToRectangles(detectedContours)
       rectMotionDetected, rectInMotion = self.detectRectangleMotion(rects)
       if rectMotionDetected:
-         activityInPreferredArea = False
-         if self.isMotionInPreferredArea( rectInMotion ):
-            activityInPreferredArea = True
+         activityInAlertArea = False
+         if self.isMotionInAlertArea( rectInMotion ):
+            activityInAlertArea = True
             Log( "Event detected: (%d, %d, %d, %d)" % rectInMotion )
             self.drawRectangles(img1, [rectInMotion], (0,0,255))            
          else:
-            activityInPreferredArea = False            
+            activityInAlertArea = False            
             Log( "Motion detected: (%d, %d, %d, %d)" % rectInMotion )            
             self.drawRectangles(img1, [rectInMotion], (255, 0, 0))
-         self.archiver.saveImage(img1, activityInPreferredArea)
-         self.archiver.saveImage(img2, activityInPreferredArea)
+         
+         if ((activityInAlertArea == True) or (self.CaptureBoarderActivity == True)): 
+            self.archiver.saveImage(img1, activityInAlertArea)
+            self.archiver.saveImage(img2, activityInAlertArea)
       else:
          self.archiver.checkSessionEnded()
-      self.drawRectangles(img1, [self.preferredArea], (0, 255, 0) )   
+      self.drawRectangles(img1, [self.AlertArea], (0, 255, 0) )   
       self.viewController.display(img1, imgDiff)
       
    def startDetect(self):
       Log( "Starting Detection" )
       running = True
       while running:
-         running = self.viewController.isRunning()
+         # there should be a better way to update camera setting
+         running, self.camera = self.viewController.isRunning()
          self.detectNight()
       return running
 
@@ -294,11 +338,10 @@ class Archiver:
          self.archiveSession()
       
       fourcc = ""
+      # cv2 version differences
       if cv2.__version__[0] == "2":
-         #opencv 2.0
          fourcc = cv2.cv.CV_FOURCC('m', 'p', '4', 'v')
       else:
-         #opencv 3.0
          fourcc = cv2.VideoWriter_fourcc('m','p','4','v')
       self.video = cv2.VideoWriter()
       self.video.open(self.fileName, fourcc, 15, self.dimension)
@@ -372,7 +415,7 @@ class ViewController:
       self.lastImage = ""
       self.drawing = False
       self.X1, self.Y1, self.X2, self.Y2 = 0,0,0,0
-      pass
+      
 
    def isRunning(self):
       keepRunning = True
@@ -393,23 +436,23 @@ class ViewController:
          self.displayType = 'diff'
       # s = save capture
       elif key & 0xFF == ord('s'):
-         self.camera.startCapture('capture.mjpg')
+         self.camera.startCaptureToFile('capture.mjpg')
       # x = exit capture
       elif key & 0xFF == ord('x'):
-         self.camera.stopCapture()
+         self.camera.stopCaptureToFile()
       # r = read from file
       elif key & 0xFF == ord('r'):
-         self.camera.setImageSource('FILE', 'capture.mjpg')
+         self.camera = VideoSourceFactory().getFileSource('capture.mjpg')         
       # c = read from camera
       elif key & 0xFF == ord('c'):
-         self.camera.setImageSource('MJPEG')
+         self.camera = VideoSourceFactory().getVideoSource()
       # o = one frame
       elif key & 0xFF == ord('o'):
          self.oneFrame = True
       # m = multi frame
       elif key & 0xFF == ord('m') and self.oneFrame == True:
          self.oneFrame = False   
-      return keepRunning
+      return keepRunning, self.camera
 
    def display(self, actualImage, diffImage):
       if self.enableDisplay == "False":
@@ -420,7 +463,8 @@ class ViewController:
          self.lastImage = actualImage
       elif self.displayType == "diff":
          cv2.imshow("motionDetect7V", diffImage)
-         self.lastImage = diffImage         
+         self.lastImage = diffImage
+      cv2.resizeWindow("motionDetect7V", 480, 640)
          
    def drawMsg(self, img, msg):
       font = cv2.FONT_HERSHEY_SIMPLEX
@@ -523,6 +567,12 @@ class FatalException(Exception):
    def __str__(self):
       return repr(self.value)
 
+class NonFatalException(Exception):
+   def __init__(self, value):
+      self.value = value
+      
+   def __str__(self):
+      return repr(self.value)
 
 class Log:
    class __singleton:
@@ -550,12 +600,16 @@ def main():
          isRunning = detector.startDetect()
       except KeyboardInterrupt:
          Log( "Exiting - Keyboard Interrupt" )
-         exit()
+         isRunning = False
       except FatalException as f:
          Log( f )
-         exit()
+         isRunning = False
       except:
          Log( traceback.format_exc() )
+         detector = ""
+         isRunning = True
+      time.sleep(5)
+         
       
 if __name__ == "__main__":
    main()

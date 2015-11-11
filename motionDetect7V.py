@@ -383,7 +383,7 @@ class Archiver:
       
    def convertToMP4(self, inFile):
       valid = True
-      videoName = "capture_%s.mp4" % datetime.datetime.now().strftime("%Y%m%d_%H%M")
+      videoName = "capture_%s.mp4" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
       os.system("mencoder -speed 1/2 -ovc lavc -lavcopts vcodec=mpeg4 -of lavf %s -o %s 1>/dev/null 2>&1" % (inFile, videoName))
       Log( "Creating MP4: %s" % videoName)
       os.remove(inFile)
@@ -399,10 +399,9 @@ class Archiver:
          self.ftp = ftplib.FTP(self.ftpAddress)
          self.ftp.login( self.ftpUser, self.ftpPsw)
          self.ftp.cwd( self.ftpDir )
-         vidName = "capture_%s.avi" % datetime.datetime.now().strftime("%Y%m%d_%H%M")
          self.ftp.storbinary("STOR " + videoName, open(videoName, "rb"), 1024)
          self.ftp.quit()
-         Log( "Video Uploaded: %s" % vidName )
+         Log( "Video Uploaded: %s" % videoName )
  
 class ViewController:
    def __init__(self, theCamera):

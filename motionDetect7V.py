@@ -612,7 +612,7 @@ def main():
     
    while keepAlive:
       # start the motion detector
-      p = multiprocessing.Process(target=startDetector, name="motionDetecor", args=(statusMsgQ,))       
+      p = multiprocessing.Process(target=startDetector, name="motionDetector", args=(statusMsgQ,))       
       p.start()
 
       # periodic heartbeat messages are expected from detector

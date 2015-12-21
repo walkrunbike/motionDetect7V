@@ -13,6 +13,7 @@ import subprocess
 import StringIO
 import datetime
 import traceback
+import multiprocessing
 
 
 class VideoSource(object):
@@ -303,13 +304,10 @@ class MotionDetector:
       self.drawRectangles(img1, [self.AlertArea], (0, 255, 0) )   
       self.viewController.display(img1, imgDiff)
       
-   def startDetect(self):
-      Log( "Starting Detection" )
-      running = True
-      while running:
-         # there should be a better way to update camera setting
-         running, self.camera = self.viewController.isRunning()
-         self.detectNight()
+   def doDetection(self):
+      # there should be a better way to update camera setting
+      running, self.camera = self.viewController.isRunning()
+      self.detectNight()
       return running
 
 
@@ -590,26 +588,56 @@ class Log:
       Log.theInstance.fp.flush()
       os.fsync(Log.theInstance.fp)
       print( msg )
-   
-def main():
+
+
+def startDetector(mesgQueue):
+   detector = MotionDetector()
    isRunning = True
+   heartbeatCount = 0
    while isRunning:
-      try:
-         detector = MotionDetector()
-         isRunning = detector.startDetect()
-      except KeyboardInterrupt:
-         Log( "Exiting - Keyboard Interrupt" )
-         isRunning = False
-      except FatalException as f:
-         Log( f )
-         isRunning = False
-      except:
-         Log( traceback.format_exc() )
-         detector = ""
-         isRunning = True
-      time.sleep(5)
+      isRunning = detector.doDetection()
+      if (not isRunning):
+         mesgQueue.put("Exit")
          
-      
+      heartbeatCount = heartbeatCount + 1
+      if ( heartbeatCount > 100 ):
+         mesgQueue.put("Heartbeat")
+         heartbeatCount = 0
+
+
+def main():
+   statusMsgQ = multiprocessing.Queue()
+   keepAlive = True
+   heartbeat = True
+    
+   while keepAlive:
+      # start the motion detector
+      p = multiprocessing.Process(target=startDetector, name="motionDetecor", args=(statusMsgQ,))       
+      p.start()
+
+      # periodic heartbeat messages are expected from detector
+      while heartbeat:
+         try:
+            status = statusMsgQ.get(timeout=60)
+            if status == "Exit":
+               heartbeat = False
+               keepAlive = False                  
+         except KeyboardInterrupt:
+            Log( "Exiting - Keyboard Interrupt" )
+            heartbeat = False
+            keepAlive = False  
+         except FatalException as f:
+            Log( f )
+            heartbeat = False
+            keepAlive = False            
+         except:
+            Log( traceback.format_exc() )
+            heartbeat = False
+            keepAlive = True            
+
+      p.terminate()
+      p.join(10)
+    
 if __name__ == "__main__":
    main()
 

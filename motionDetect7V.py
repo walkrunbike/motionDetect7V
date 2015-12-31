@@ -606,14 +606,18 @@ def startDetector(mesgQueue):
 
 
 def main():
+   ConfigManager()
    statusMsgQ = multiprocessing.Queue()
    keepAlive = True
    heartbeat = True
-    
+
    while keepAlive:
       # start the motion detector
       p = multiprocessing.Process(target=startDetector, name="motionDetector", args=(statusMsgQ,))       
       p.start()
+
+      keepAlive = True
+      heartbeat = True
 
       # periodic heartbeat messages are expected from detector
       while heartbeat:
@@ -635,7 +639,9 @@ def main():
             heartbeat = False
             keepAlive = True            
 
+      Log( "Terminating..." )
       p.terminate()
+      Log( "Joining..." )
       p.join(10)
     
 if __name__ == "__main__":
